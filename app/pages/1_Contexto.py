@@ -21,9 +21,11 @@ df = st.session_state["df"]
 # Suma de la cantidad de filas por año
 años = df["Año"].value_counts().sort_index()
 
+st.subheader("Evolución de la cantidad de vuelos en Chile")
 # Grafico de barras
 st.bar_chart(años, color="#3498DB")
 
+st.subheader("Evolución de la cantidad de pasajeros de vuelos en Chile")
 # Suma de la cantidad de pasajeros por año 
 pasajeros_por_año = df.groupby("Año")["PASAJEROS"].sum().sort_index()
 
