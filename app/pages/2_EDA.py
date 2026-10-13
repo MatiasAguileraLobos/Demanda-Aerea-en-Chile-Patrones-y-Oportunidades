@@ -1,441 +1,688 @@
-import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import streamlit as st
 
-# Barra lateral
-st.sidebar.page_link('app.py', label='Inicio', icon='')
-st.sidebar.page_link('pages/1_Contexto.py', label='Contexto', icon='')
-st.sidebar.page_link('pages/2_EDA.py', label='EDA', icon='')
-st.sidebar.page_link('pages/3_Analisis.py', label='Analisis', icon='')
+from data_loader import load_clean_data
 
-st.title("EDA")
 
+def formato_numero(valor: float, decimales: int = 0) -> str:
+    """Formatea números con separadores usados habitualmente en español."""
+    texto = f"{valor:,.{decimales}f}"
+    return texto.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+# Navegación compartida con el resto de la aplicación.
+st.sidebar.page_link("app.py", label="Inicio")
+st.sidebar.page_link("pages/1_Contexto.py", label="Contexto y Datos")
+st.sidebar.page_link("pages/2_EDA.py", label="EDA")
+st.sidebar.page_link("pages/3_Analisis.py", label="Análisis")
+
+st.title("Análisis exploratorio de datos")
 st.write(
-    "Para realizar este proyecto utilizamos un dataset de los vuelos que han" +
-    "pasado por Chile desde 1984 hasta 2025, recompilado por la Junta de " +
-    "Aeronáutica Civil."
+    "Exploraremos cómo se distribuyen los pasajeros registrados y cómo varían sus "
+    "cantidades entre rutas, operadores, tipos de tráfico y distancias. Las observaciones "
+    "son registros agregados por ruta, operador y periodo; no corresponden necesariamente "
+    "a vuelos individuales. Las comparaciones son descriptivas y no establecen causalidad."
 )
 
-st.write(
-    "Divideros nuestra estructurá en 3 componentes, X, Y y T:\n\n" +
-    "X: Caracteristicas del vuelo (origen/destino, aerolínea, mes).\n\n" +
-    "Y: Cantidad de pasajeros.\n\n" +
-    "T: Contexto temporal, en este caso, años."
-)
-
-st.header("Estructura y calidad de los datos")
-st.subheader("Dimensiones del conjunto de datos")
-st.write(
-    "Primero revisaremos cuántos registros y variables contiene el " +
-    "archivo. Esta comprobación permite dimensionar el análisis y " +
-    "contrastar la cantidad de observaciones descrita en el README con " +
-    "el CSV utilizado, sin modificar los datos."
-)
-
-df = st.session_state["df"]
-
-filas, columnas = df.shape
-
-st.write(f"Cantidad de registros: {filas:,}")
-st.write(f"Cantidad de variables: {columnas}")
-
-st.subheader("Variables y tipos de datos")
-st.write(
-    "Revisaremos los nombres originales y los tipos que pandas asignó al cargar " +
-    "el archivo completo. Los tipos ayudan a detectar columnas que podrían requerir " +
-    "atención antes de analizarlas; en esta etapa solo inspeccionaremos, sin convertirlas."
-)
-
-# Construccion de tabla con el nombre de las variables y el tipo de datos
-tabla = {"Nombre": [], "Tipo": [], 
-         "Descripción": [
-             "Año de la información del registro.",
-             "Mes de la información del registro.",
-             "Código de operador utilizado por las aerolíneas.",
-             "Nombre del operador.",
-             "Grupo empresarial al que pertenece el operador.",
-             "Código del aeropuerto de origen (direccional) en formato IATA.",
-             "Código del aeropuerto de destino (direccional) en formato IATA.",
-             "Nombre de ciudad que el aeropuerto de origen (direccional) sirve.",
-             "Nombre de ciudad que el aeropuerto de destino (direccional) sirve.",
-             "Nombre de país del aeropuerto de origen (direccional).",
-             "Nombre de país del aeropuerto de destino (direccional).",
-             "Código del aeropuerto de origen (por ruta) en formato IATA.",
-             "Código del aeropuerto de destino (por ruta) en formato IATA.",
-             "Nombre de ciudad que el aeropuerto de origen (por ruta) sirve.",
-             "Nombre de ciudad que el aeropuerto de destino (por ruta) sirve.",
-             "Nombre de país del aeropuerto de origen (por ruta).",
-             "Nombre de país del aeropuerto de destino (por ruta).",
-             "Identificador de llegada/salida, con referencia al origen de la ruta.",
-             "Identificador de tipo de tráfico (nacional o internacional).",
-             "Número de pasajeros libres de pago.",
-             "Número de pasajeros de pago.",
-             "Carga libre de pago (Kg).",
-             "Carga total (Ton).",
-             "Correo de pago (Kg).",
-             "Distancia lineal entre el origen y el destino."
-         ]
+# La página trabaja exclusivamente con el dataset preparado.
+df = load_clean_data()
+columnas_requeridas = {
+    "PASAJEROS", "NAC", "Año", "Operador", "ORIG_1", "DEST_1", "Distancia"
 }
-# Nombre de las variables
-for variable in df.columns.tolist():
-    tabla["Nombre"].append(variable)
-# Tipo de datos
-for tipo in df.dtypes.tolist():
-    tabla["Tipo"].append(tipo)
-#---------------------------
+columnas_ausentes = columnas_requeridas.difference(df.columns)
+if columnas_ausentes:
+    st.error(
+        "No se puede ejecutar el análisis: faltan columnas necesarias en el dataset "
+        f"preparado ({', '.join(sorted(columnas_ausentes))})."
+    )
+    st.stop()
 
-st.table(tabla, alt="Nombre de las variables, sus tipos y descripción")
+tipos_trafico = sorted(df["NAC"].dropna().unique().tolist())
+año_min = int(df["Año"].min())
+año_max = int(df["Año"].max())
 
-st.subheader("Valores faltantes")
-st.write(
-    "Cuantificaremos los faltantes por variable, tanto en cantidad como en porcentaje. " +
-    "Esto permite evaluar qué variables están completas y considerar si los faltantes afectan " +
-    "el análisis de demanda o variables contextuales."
+
+# -----------------------------------------------------------------------------
+# 1. Distribución de pasajeros
+# -----------------------------------------------------------------------------
+st.header("1. Distribución de pasajeros")
+st.markdown(
+    "El histograma resume la frecuencia de registros en distintos rangos de `PASAJEROS`. "
+    "Se conservan las observaciones con cero pasajeros y los valores altos; las métricas "
+    "se calculan en la escala original."
 )
 
-# Calculo de datos faltantes
-total_faltantes = df.isna().sum().sum()
-total_no_faltantes = df.notna().sum().sum()
-
-col1, col2 = st.columns(2)
-
-# Grafico 1: valores faltantes vs no faltantes --
-with col1:
-    datos_pastel = pd.DataFrame({
-        "Estado": ["Valores faltantes", "Valores no faltantes"],
-        "Cantidad": [total_faltantes, total_no_faltantes]
-    })
-
-    fig1 = px.pie(
-        datos_pastel,
-        names="Estado",
-        values="Cantidad",
-        title="Valores faltantes vs. completos",
-        color="Estado",
-        color_discrete_map={
-            "Valores faltantes": "#EF553B",
-            "Valores no faltantes": "#636EFA"
-        },
-        hole=0.3
+col_bins, col_escala = st.columns([1, 1])
+with col_bins:
+    cantidad_intervalos = st.slider(
+        "Intervalos del histograma", min_value=10, max_value=100, value=50, step=5,
+        key="eda_hist_bins"
+    )
+with col_escala:
+    escala_histograma = st.radio(
+        "Escala de visualización", options=["Original", "log1p"], horizontal=True,
+        key="eda_hist_scale",
+        help="log1p representa log(1 + pasajeros), mantiene los ceros en cero y comprime la cola alta."
     )
 
-    fig1.update_traces(textposition="inside", textinfo="percent+label")
-    st.plotly_chart(fig1, use_container_width=True)
-#---------------------------------------------------------
-# Grafico 2: Valores faltantes por columna
-with col2:
-    faltantes_columna = df.isna().sum()
-    faltantes_columna = faltantes_columna[faltantes_columna > 0]
+pasajeros = df["PASAJEROS"].dropna()
+media_pasajeros = float(pasajeros.mean())
+mediana_pasajeros = float(pasajeros.median())
+percentil_90_pasajeros = float(pasajeros.quantile(0.90))
+cantidad_ceros = int(pasajeros.eq(0).sum())
+porcentaje_ceros = cantidad_ceros / len(pasajeros) * 100 if len(pasajeros) else 0.0
 
-    # Crear DataFrame y calcular el porcentaje del total de faltantes
-    datos_columnas = pd.DataFrame({
-        "Columna": faltantes_columna.index,
-        "Cantidad de faltantes": faltantes_columna.values
-    })
+metricas_pasajeros = st.columns(3)
+metricas_pasajeros[0].metric("Media por registro", formato_numero(media_pasajeros))
+metricas_pasajeros[1].metric("Mediana", formato_numero(mediana_pasajeros))
+metricas_pasajeros[2].metric("Percentil 90", formato_numero(percentil_90_pasajeros))
 
-    total_faltantes = datos_columnas["Cantidad de faltantes"].sum()
-    datos_columnas["Porcentaje del total"] = (
-        datos_columnas["Cantidad de faltantes"] / total_faltantes * 100
+if escala_histograma == "log1p":
+    datos_histograma = pd.DataFrame({"log(1 + PASAJEROS)": np.log1p(pasajeros)})
+    columna_histograma = "log(1 + PASAJEROS)"
+    etiqueta_histograma = "log(1 + pasajeros por registro)"
+    titulo_histograma = "Distribución de pasajeros por registro (escala log1p)"
+else:
+    datos_histograma = pd.DataFrame({"PASAJEROS": pasajeros})
+    columna_histograma = "PASAJEROS"
+    etiqueta_histograma = "Pasajeros por registro"
+    titulo_histograma = "Distribución de pasajeros por registro (escala original)"
+
+fig_histograma = px.histogram(
+    datos_histograma,
+    x=columna_histograma,
+    nbins=cantidad_intervalos,
+    title=titulo_histograma,
+    labels={columna_histograma: etiqueta_histograma, "count": "Registros"},
+    color_discrete_sequence=["#3B82A0"],
+)
+fig_histograma.update_layout(
+    xaxis_title=etiqueta_histograma,
+    yaxis_title="Cantidad de registros",
+    bargap=0.06,
+    margin=dict(t=70, l=45, r=25, b=55),
+)
+fig_histograma.update_traces(
+    hovertemplate=f"{etiqueta_histograma}: %{{x:,.2f}}<br>Registros: %{{y:,.0f}}<extra></extra>"
+)
+st.plotly_chart(fig_histograma, use_container_width=True)
+
+if media_pasajeros > mediana_pasajeros:
+    lectura_forma = (
+        f"La media ({formato_numero(media_pasajeros)}) supera la mediana "
+        f"({formato_numero(mediana_pasajeros)}), consistente con una distribución "
+        "asimétrica hacia cantidades altas."
+    )
+elif media_pasajeros < mediana_pasajeros:
+    lectura_forma = (
+        f"La media ({formato_numero(media_pasajeros)}) es menor que la mediana "
+        f"({formato_numero(mediana_pasajeros)}); la forma debe interpretarse junto "
+        "con el histograma y los demás cuantiles."
+    )
+else:
+    lectura_forma = "La media y la mediana coinciden; por sí solas no indican asimetría."
+st.caption(
+    f"{lectura_forma} {formato_numero(cantidad_ceros)} registros "
+    f"({formato_numero(porcentaje_ceros, 2)} %) tienen cero pasajeros. Esos ceros "
+    "son parte de la distribución observada y se conservan: el análisis describe cómo "
+    "se reparte la demanda registrada entre observaciones agregadas."
+)
+if escala_histograma == "log1p":
+    st.caption(
+        "La escala horizontal muestra log(1 + PASAJEROS), no cantidades en unidades "
+        "originales. La transformación conserva el cero en cero y no cambia los datos; "
+        "las métricas se mantienen en pasajeros."
     )
 
-    # Crear gráfico circular
-    fig2 = px.pie(
-        datos_columnas,
-        names="Columna",
-        values="Cantidad de faltantes",
-        title="Distribución de faltantes por columna",
-        hole=0.3,
-        hover_data=["Porcentaje del total"]
+
+# -----------------------------------------------------------------------------
+# 2. Frecuencia de categorías
+# -----------------------------------------------------------------------------
+st.header("2. Frecuencia de operadores, orígenes, destinos y rutas")
+st.markdown(
+    "La frecuencia cuenta registros por categoría en todo el periodo disponible. "
+    "Permite conocer qué operadores, puntos de origen, destinos o tramos aparecen "
+    "más en el archivo; no mide pasajeros acumulados ni vuelos individuales."
+)
+
+col_categoria, col_topn_frecuencia = st.columns([1, 1])
+with col_categoria:
+    dimension_frecuencia = st.selectbox(
+        "Categoría para contar", options=["Operador", "Origen", "Destino", "Ruta direccional"],
+        key="eda_frequency_dimension"
+    )
+with col_topn_frecuencia:
+    top_n_frecuencia = st.slider(
+        "Categorías a mostrar (Top N)", min_value=5, max_value=30, value=10,
+        key="eda_frequency_topn"
     )
 
-    fig2.update_traces(
-        textposition="inside",
-        textinfo="percent+label",
+if dimension_frecuencia == "Operador":
+    frecuencia = df["Operador"].value_counts(dropna=True).rename_axis("Categoría").reset_index(name="Registros")
+elif dimension_frecuencia == "Origen":
+    frecuencia = df["ORIG_1"].value_counts(dropna=True).rename_axis("Categoría").reset_index(name="Registros")
+elif dimension_frecuencia == "Destino":
+    frecuencia = df["DEST_1"].value_counts(dropna=True).rename_axis("Categoría").reset_index(name="Registros")
+else:
+    pares_ruta = df.dropna(subset=["ORIG_1", "DEST_1"])
+    frecuencia = (
+        pares_ruta.groupby(["ORIG_1", "DEST_1"], observed=True)
+        .size()
+        .rename("Registros")
+        .reset_index()
+    )
+    frecuencia["Categoría"] = frecuencia["ORIG_1"] + " → " + frecuencia["DEST_1"]
+    frecuencia = frecuencia[["Categoría", "Registros"]]
+
+if frecuencia.empty:
+    st.info("No hay categorías disponibles para mostrar.")
+else:
+    top_frecuencia = frecuencia.nlargest(top_n_frecuencia, "Registros").sort_values("Registros")
+    fig_frecuencia = px.bar(
+        top_frecuencia,
+        x="Registros",
+        y="Categoría",
+        orientation="h",
+        text=top_frecuencia["Registros"].map(formato_numero),
+        title=f"Categorías con más registros: {dimension_frecuencia.lower()}",
+        labels={"Categoría": dimension_frecuencia, "Registros": "Cantidad de registros"},
+        color_discrete_sequence=["#3B82A0"],
+    )
+    fig_frecuencia.update_traces(
+        textposition="outside", cliponaxis=False,
+        hovertemplate="%{y}<br>Registros: %{x:,.0f}<extra></extra>"
+    )
+    fig_frecuencia.update_yaxes(
+        categoryorder="array", categoryarray=top_frecuencia["Categoría"].tolist()
+    )
+    fig_frecuencia.update_layout(
+        xaxis_title="Cantidad de registros",
+        yaxis_title=dimension_frecuencia,
+        margin=dict(t=70, l=45, r=45, b=55),
+    )
+    st.plotly_chart(fig_frecuencia, use_container_width=True)
+    categoria_mas_frecuente = top_frecuencia.iloc[-1]
+    st.caption(
+        f"En el conjunto completo, {categoria_mas_frecuente['Categoría']} es la categoría "
+        f"más frecuente entre las mostradas ({formato_numero(categoria_mas_frecuente['Registros'])} "
+        "registros). Esta frecuencia describe su representación en el dataset, no su "
+        "demanda de pasajeros; para eso se usa la suma de `PASAJEROS`."
+    )
+if dimension_frecuencia == "Ruta direccional":
+    st.caption(
+        "Las rutas se construyen con `ORIG_1` → `DEST_1`; se mantiene el sentido del tramo. "
+        "No se mezclan los campos `_1` y `_2` ni se combinan direcciones opuestas."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 3. Comparación por tipo de tráfico
+# -----------------------------------------------------------------------------
+st.header("3. Comparación entre tráfico nacional e internacional")
+st.markdown(
+    "Comparamos pasajeros por registro. Como la distribución es asimétrica y contiene "
+    "ceros, el boxplot representa el eje vertical como log(1 + PASAJEROS): el cero se "
+    "mantiene en cero y la cola alta se comprime. La tabla y la interpretación muestran "
+    "estadísticas en la escala original."
+)
+
+col_anios_tipo, col_tipos_tipo = st.columns([1, 1])
+with col_anios_tipo:
+    rango_anios_tipo = st.slider(
+        "Rango de años", min_value=año_min, max_value=año_max,
+        value=(año_min, año_max), key="eda_box_years"
+    )
+with col_tipos_tipo:
+    seleccion_tipos_tipo = st.multiselect(
+        "Tipo de tráfico", options=tipos_trafico, default=tipos_trafico,
+        key="eda_box_traffic"
+    )
+
+datos_tipo = df.loc[
+    df["Año"].between(rango_anios_tipo[0], rango_anios_tipo[1])
+    & df["NAC"].isin(seleccion_tipos_tipo)
+].copy()
+
+if datos_tipo.empty:
+    st.info("La selección no contiene registros. Amplía el rango o selecciona un tipo de tráfico.")
+else:
+    datos_tipo["log1p(PASAJEROS)"] = np.log1p(datos_tipo["PASAJEROS"])
+    orden_tipos = [tipo for tipo in tipos_trafico if tipo in seleccion_tipos_tipo]
+    fig_boxplot = px.box(
+        datos_tipo,
+        x="NAC",
+        y="log1p(PASAJEROS)",
+        category_orders={"NAC": orden_tipos},
+        points=False,
+        title=f"Distribución por tipo de tráfico ({rango_anios_tipo[0]}–{rango_anios_tipo[1]})",
+        labels={"NAC": "Tipo de tráfico", "log1p(PASAJEROS)": "log(1 + pasajeros por registro)"},
+        color="NAC",
+        color_discrete_sequence=["#3B82A0", "#E28E4A"],
+        custom_data=["PASAJEROS"],
+    )
+    valores_eje_box = [0, 1, 10, 100, 1_000, 10_000, 50_000]
+    fig_boxplot.update_yaxes(
+        tickmode="array",
+        tickvals=np.log1p(valores_eje_box),
+        ticktext=[formato_numero(valor) for valor in valores_eje_box],
+        title="Pasajeros por registro (etiquetas originales; caja en escala log1p)",
+    )
+    fig_boxplot.update_layout(
+        xaxis_title="Tipo de tráfico",
+        showlegend=False,
+        margin=dict(t=70, l=45, r=25, b=50),
+    )
+    fig_boxplot.update_traces(
         hovertemplate=(
-            "<b>%{label}</b><br>"
-            "Valores faltantes: %{value:,}<br>"
-            "Porcentaje del total: %{percent}"
+            "Tipo: %{x}<br>log(1 + pasajeros): %{y:.3f}"
+            "<br>Pasajeros por registro: %{customdata[0]:,.0f}<extra></extra>"
+        )
+    )
+    st.plotly_chart(fig_boxplot, use_container_width=True)
+
+    estadisticas_tipo = (
+        datos_tipo.groupby("NAC", observed=True)
+        .agg(
+            Registros=("PASAJEROS", "size"),
+            Media=("PASAJEROS", "mean"),
+            Mediana=("PASAJEROS", "median"),
+            Q1=("PASAJEROS", lambda serie: serie.quantile(0.25)),
+            Q3=("PASAJEROS", lambda serie: serie.quantile(0.75)),
+            Ceros_pct=("PASAJEROS", lambda serie: serie.eq(0).mean() * 100),
+        )
+        .reindex(orden_tipos)
+        .dropna(how="all")
+    )
+    estadisticas_tipo["IQR"] = estadisticas_tipo["Q3"] - estadisticas_tipo["Q1"]
+    tabla_tipo = estadisticas_tipo.rename_axis("Tipo de tráfico").reset_index()
+    for columna in ["Media", "Mediana", "Q1", "Q3", "IQR"]:
+        tabla_tipo[columna] = tabla_tipo[columna].map(formato_numero)
+    tabla_tipo["Registros"] = tabla_tipo["Registros"].map(formato_numero)
+    tabla_tipo["Ceros (%)"] = tabla_tipo.pop("Ceros_pct").map(lambda valor: formato_numero(valor, 2) + " %")
+    tabla_tipo = tabla_tipo.rename(columns={
+        "Media": "Media pasajeros", "IQR": "Rango intercuartílico"
+    })
+    st.markdown("**Estadísticas en la escala original**")
+    st.dataframe(tabla_tipo, hide_index=True, use_container_width=True)
+
+    medianas_tipo = estadisticas_tipo["Mediana"].dropna()
+    if len(medianas_tipo) >= 2:
+        mayor, menor = medianas_tipo.idxmax(), medianas_tipo.idxmin()
+        if mayor != menor:
+            iqr_mayor = estadisticas_tipo.loc[mayor, "IQR"]
+            iqr_menor = estadisticas_tipo.loc[menor, "IQR"]
+            if iqr_mayor > iqr_menor:
+                lectura_dispersion = f"El IQR también es mayor en {mayor}."
+            elif iqr_mayor < iqr_menor:
+                lectura_dispersion = f"El IQR también es mayor en {menor}."
+            else:
+                lectura_dispersion = "Los IQR de ambos grupos son iguales."
+            st.caption(
+                f"Con estos filtros, la mediana por registro es mayor en {mayor} "
+                f"({formato_numero(medianas_tipo[mayor])}) que en {menor} "
+                f"({formato_numero(medianas_tipo[menor])}). {lectura_dispersion} "
+                "Esto describe los registros seleccionados, no una diferencia causal entre tráficos."
+            )
+        else:
+            st.caption("Los grupos seleccionados tienen la misma mediana por registro.")
+    else:
+        tipo = medianas_tipo.index[0]
+        porcentaje_ceros_tipo = estadisticas_tipo.loc[tipo, "Ceros_pct"]
+        st.caption(
+            f"Para {tipo}, la mediana es {formato_numero(medianas_tipo.iloc[0])} pasajeros por registro; "
+            f"{formato_numero(porcentaje_ceros_tipo, 2)} % de sus registros tienen cero pasajeros. "
+            "Selecciona ambos tipos para compararlos."
+        )
+    st.caption(
+        "Se comparan registros agregados de tráfico, no pasajeros individuales ni necesariamente "
+        "vuelos individuales. El eje log1p facilita la lectura sin excluir registros con cero."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 4. Distribución de distancias
+# -----------------------------------------------------------------------------
+st.header("4. Distribución de distancias")
+st.markdown(
+    "La distancia describe una característica registrada del tramo. El histograma y "
+    "los cuantiles permiten examinar su centro, dispersión y posible cola alta; se usa "
+    "una etiqueta neutral, sin asignar una unidad no verificada."
+)
+
+col_bins_distancia, col_escala_distancia = st.columns([1, 1])
+with col_bins_distancia:
+    intervalos_distancia = st.slider(
+        "Intervalos para Distancia", min_value=10, max_value=100, value=50, step=5,
+        key="eda_distance_bins"
+    )
+with col_escala_distancia:
+    escala_distancia = st.radio(
+        "Escala para Distancia", options=["Original", "log1p"], horizontal=True,
+        key="eda_distance_scale"
+    )
+
+distancia = df["Distancia"].dropna()
+media_distancia = float(distancia.mean())
+mediana_distancia = float(distancia.median())
+q1_distancia = float(distancia.quantile(0.25))
+q3_distancia = float(distancia.quantile(0.75))
+iqr_distancia = q3_distancia - q1_distancia
+limite_iqr_distancia = q3_distancia + 1.5 * iqr_distancia
+extremos_distancia = int(distancia.gt(limite_iqr_distancia).sum())
+
+metricas_distancia = st.columns(3)
+metricas_distancia[0].metric("Mediana", formato_numero(mediana_distancia))
+metricas_distancia[1].metric("Media", formato_numero(media_distancia, 2))
+metricas_distancia[2].metric("Rango intercuartílico", formato_numero(iqr_distancia))
+
+if escala_distancia == "log1p":
+    datos_distancia = pd.DataFrame({"log(1 + Distancia)": np.log1p(distancia)})
+    columna_distancia = "log(1 + Distancia)"
+    etiqueta_distancia = "log(1 + distancia registrada)"
+else:
+    datos_distancia = pd.DataFrame({"Distancia": distancia})
+    columna_distancia = "Distancia"
+    etiqueta_distancia = "Distancia registrada"
+
+fig_distancia = px.histogram(
+    datos_distancia,
+    x=columna_distancia,
+    nbins=intervalos_distancia,
+    title=f"Distribución de {etiqueta_distancia.lower()}",
+    labels={columna_distancia: etiqueta_distancia, "count": "Registros"},
+    color_discrete_sequence=["#4C956C"],
+)
+fig_distancia.update_layout(
+    xaxis_title=etiqueta_distancia,
+    yaxis_title="Cantidad de registros",
+    bargap=0.06,
+    margin=dict(t=70, l=45, r=25, b=55),
+)
+st.plotly_chart(fig_distancia, use_container_width=True)
+
+if media_distancia > mediana_distancia:
+    lectura_distancia = "La media supera la mediana, compatible con una cola hacia distancias registradas mayores."
+elif media_distancia < mediana_distancia:
+    lectura_distancia = "La media es menor que la mediana; revisa el histograma para caracterizar la forma."
+else:
+    lectura_distancia = "La media y la mediana coinciden; estos estadísticos no bastan para describir la forma."
+st.caption(
+    f"{lectura_distancia} El 50 % central abarca {formato_numero(q1_distancia)}–"
+    f"{formato_numero(q3_distancia)} (IQR {formato_numero(iqr_distancia)}). "
+    f"La regla exploratoria Q3 + 1,5 × IQR marca {formato_numero(extremos_distancia)} "
+    "observaciones por encima del umbral; son extremos estadísticos potenciales, no errores confirmados."
+)
+if escala_distancia == "log1p":
+    st.caption("La escala log1p se usa solo para mostrar el histograma; los estadísticos siguen en la escala original.")
+
+
+# -----------------------------------------------------------------------------
+# 5. Relaciones entre variables
+# -----------------------------------------------------------------------------
+st.header("5. Relaciones entre distancia, pasajeros y operadores")
+st.markdown(
+    "Estas comparaciones relacionan la cantidad de pasajeros registrada con una medida "
+    "del tramo y con las categorías de operador. Una asociación o diferencia observada "
+    "no permite atribuir causas."
+)
+
+st.subheader("Distancia y pasajeros por registro")
+st.markdown(
+    "El dispersograma usa una muestra aleatoria reproducible para facilitar la lectura. "
+    "La correlación de Pearson se calcula sobre todos los registros que cumplen los filtros, "
+    "en las unidades originales de ambas variables."
+)
+
+col_anios_relacion, col_tipos_relacion = st.columns([1, 1])
+with col_anios_relacion:
+    rango_anios_relacion = st.slider(
+        "Rango de años", min_value=año_min, max_value=año_max,
+        value=(año_min, año_max), key="eda_relation_years"
+    )
+with col_tipos_relacion:
+    seleccion_tipos_relacion = st.multiselect(
+        "Tipo de tráfico", options=tipos_trafico, default=tipos_trafico,
+        key="eda_relation_traffic"
+    )
+
+datos_relacion = df.loc[
+    df["Año"].between(rango_anios_relacion[0], rango_anios_relacion[1])
+    & df["NAC"].isin(seleccion_tipos_relacion),
+    ["Distancia", "PASAJEROS", "NAC"]
+].dropna().copy()
+
+if datos_relacion.empty:
+    st.info("La selección no contiene registros para relacionar Distancia y PASAJEROS.")
+else:
+    correlacion = datos_relacion["Distancia"].corr(datos_relacion["PASAJEROS"], method="pearson")
+    cantidad_muestra = min(15_000, len(datos_relacion))
+    muestra = datos_relacion.sample(n=cantidad_muestra, random_state=42)
+    muestra["log1p(PASAJEROS)"] = np.log1p(muestra["PASAJEROS"])
+
+    metrica_correlacion, metrica_muestra = st.columns(2)
+    metrica_correlacion.metric(
+        "Correlación de Pearson (escala original)",
+        "No disponible" if pd.isna(correlacion) else formato_numero(correlacion, 3)
+    )
+    metrica_muestra.metric(
+        "Puntos mostrados", f"{formato_numero(cantidad_muestra)} de {formato_numero(len(datos_relacion))}"
+    )
+
+    fig_dispersion = px.scatter(
+        muestra,
+        x="Distancia",
+        y="log1p(PASAJEROS)",
+        color="NAC" if len(seleccion_tipos_relacion) > 1 else None,
+        opacity=0.35,
+        title="Distancia registrada y pasajeros por observación (muestra reproducible)",
+        labels={
+            "Distancia": "Distancia registrada",
+            "log1p(PASAJEROS)": "log(1 + pasajeros por registro)",
+            "NAC": "Tipo de tráfico",
+        },
+        color_discrete_sequence=["#3B82A0", "#E28E4A"],
+    )
+    ticks_pasajeros = [0, 1, 10, 100, 1_000, 10_000, 50_000]
+    fig_dispersion.update_yaxes(
+        tickmode="array",
+        tickvals=np.log1p(ticks_pasajeros),
+        ticktext=[formato_numero(valor) for valor in ticks_pasajeros],
+        title="Pasajeros por registro (etiquetas originales; eje log1p)",
+    )
+    fig_dispersion.update_traces(
+        hovertemplate=(
+            "Distancia registrada: %{x:,.0f}<br>log(1 + pasajeros): %{y:.3f}"
             "<extra></extra>"
         )
     )
-    st.plotly_chart(fig2, use_container_width=True)
-#--------------------------------------------
-st.subheader("Registros duplicados")
-st.write(
-    "Contaremos filas completamente idénticas, sin eliminarlas. Los duplicados exactos pueden inflar " +
-    "los conteos de pasajeros si son errores de registro; aun así, primero hay que revisar su cantidad " +
-    "y contexto antes de decidir qué hacer."
+    fig_dispersion.update_layout(margin=dict(t=70, l=45, r=25, b=55))
+    st.plotly_chart(fig_dispersion, use_container_width=True)
+
+    if pd.isna(correlacion):
+        st.caption(
+            "No se pudo calcular Pearson porque una de las variables no presenta variación "
+            "en los registros filtrados."
+        )
+    else:
+        if abs(correlacion) < 0.1:
+            intensidad = "muy débil"
+        elif abs(correlacion) < 0.3:
+            intensidad = "débil"
+        elif abs(correlacion) < 0.5:
+            intensidad = "moderada"
+        else:
+            intensidad = "marcada"
+        sentido = "positiva" if correlacion > 0 else "negativa" if correlacion < 0 else "nula"
+        st.caption(
+            f"En los registros filtrados, la asociación lineal es {sentido} y {intensidad} "
+            f"(r = {formato_numero(correlacion, 3)}). Pearson resume solo una asociación "
+            "lineal y puede verse influida por asimetrías y valores extremos; no demuestra "
+            "que la distancia cause cambios en pasajeros. El gráfico muestra una muestra "
+            f"reproducible de {formato_numero(cantidad_muestra)} registros; la correlación usa "
+            "todos los registros filtrados."
+        )
+
+st.subheader("Pasajeros acumulados por operador o ruta")
+st.markdown(
+    "La suma de `PASAJEROS` responde dónde se concentra el volumen registrado en el "
+    "periodo filtrado. El total puede depender tanto de los pasajeros por registro como "
+    "de la cantidad de observaciones y la cobertura temporal de cada categoría."
 )
 
-duplicados_exactos = df.duplicated().sum()
-porcentaje_duplicados = (duplicados_exactos / len(df) * 100) if len(df) else 0
-st.write(f"Filas completamente duplicadas: {duplicados_exactos:,}")
-st.write(f"Porcentaje del dataset: {porcentaje_duplicados:.2f}%")
+col_dimension, col_topn = st.columns([1, 1])
+with col_dimension:
+    dimension_acumulado = st.radio(
+        "Agrupar el total por", options=["Operador", "Ruta direccional"], horizontal=True,
+        key="eda_bar_dimension"
+    )
+with col_topn:
+    top_n_acumulado = st.slider(
+        "Categorías acumuladas a mostrar (Top N)", min_value=5, max_value=30, value=10,
+        key="eda_bar_topn"
+    )
 
-mascara_duplicados = df.duplicated(keep=False)
-ejemplos_duplicados = df.loc[mascara_duplicados].drop_duplicates().head(5)
-st.write(f"Filas que forman parte de grupos duplicados: {mascara_duplicados.sum():,}")
-st.write(ejemplos_duplicados)
+col_anios_acumulado, col_tipos_acumulado = st.columns([1, 1])
+with col_anios_acumulado:
+    rango_anios_acumulado = st.slider(
+        "Rango de años", min_value=año_min, max_value=año_max,
+        value=(año_min, año_max), key="eda_bar_years"
+    )
+with col_tipos_acumulado:
+    seleccion_tipos_acumulado = st.multiselect(
+        "Tipo de tráfico", options=tipos_trafico, default=tipos_trafico,
+        key="eda_bar_traffic"
+    )
 
-st.write("El conteo confirma **18 filas duplicadas exactas** (0,01 % al redondear a dos decimales). " +
-         "La tabla muestra ejemplos de filas que aparecen más de una vez; en total, 36 filas participan "+ 
-         "en esos pares. Como son idénticas en todas las columnas, podrían inflar agregaciones si " +
-         "representan duplicaciones de registro. Conviene investigar su procedencia antes de eliminarlas, " +
-         "pues el conteo por sí solo no explica cómo se generaron. Se conservan todas."
-)
+datos_acumulados = df.loc[
+    df["Año"].between(rango_anios_acumulado[0], rango_anios_acumulado[1])
+    & df["NAC"].isin(seleccion_tipos_acumulado)
+].copy()
 
-#-------------------------------------------
-st.subheader("Rangos y categorías")
-st.write("Comprobaremos condiciones básicas para variables cuyo dominio es interpretable —por ejemplo, meses " +
-         "entre 1 y 12 y pasajeros no negativos— y revisaremos etiquetas categóricas con espacios o " +
-         "diferencias de mayúsculas. Estas señales identifican valores para investigar; no corrigen ni descartan " +
-         "registros."
-)
-
-columnas_numericas = df.select_dtypes(include="number").columns
-st.write("Rangos observados en variables numéricas:")
-st.write(df[columnas_numericas].agg(["min", "max"]).T)
-
-# Validacion de meses
-if "Mes" in df.columns:
-    meses_invalidos = df.loc[~df["Mes"].between(1, 12), "Mes"]
-    st.write(f"\n\nRegistros con Mes fuera de 1–12: {len(meses_invalidos):,}")
-    if len(meses_invalidos):
-        st.write("Valores observados:", sorted(meses_invalidos.dropna().unique().tolist()))
-
-# Busqueda de columnas con pasajeros negativos
-for columna in ["PASAJEROS", "Distancia"]:
-    if columna in df.columns:
-        cantidad_negativos = (df[columna] < 0).sum()
-        st.write(f"Registros con {columna} negativo: {cantidad_negativos:,}")
-
-columnas_categoricas = df.select_dtypes(include=["object", "string"]).columns
-resumen_categorias = pd.DataFrame({
-    "categorias_distintas": df[columnas_categoricas].nunique(dropna=True),
-    "con_espacios_exteriores": pd.Series({
-        col: df[col].dropna().astype(str).str.strip().ne(df[col].dropna().astype(str)).sum()
-        for col in columnas_categoricas
-    })
-}, index=columnas_categoricas)
-
-st.write("Resumen de categorías y etiquetas con espacios exteriores:")
-st.write(resumen_categorias.sort_values("categorias_distintas", ascending=False))
-
-# Busqueda de variantes
-posibles_variantes = {}
-for columna in columnas_categoricas:
-    etiquetas = df[columna].dropna().astype(str)
-    grupos = etiquetas.groupby(etiquetas.str.strip().str.upper()).unique()
-    variantes = {etiqueta: valores.tolist() for etiqueta, valores in grupos.items() if len(valores) > 1}
-    if variantes:
-        posibles_variantes[columna] = variantes
-
-if posibles_variantes:
-    st.write("Etiquetas distintas que coinciden al ignorar espacios exteriores y mayúsculas:")
-    for columna, variantes in posibles_variantes.items():
-        st.write(f"{columna}: {variantes}")
+if dimension_acumulado == "Operador":
+    datos_acumulados = datos_acumulados.dropna(subset=["Operador"])
+    acumulados = (
+        datos_acumulados.groupby("Operador", observed=True)["PASAJEROS"]
+        .agg(Pasajeros_acumulados="sum", Registros="size")
+        .reset_index()
+        .rename(columns={"Operador": "Categoría", "Pasajeros_acumulados": "Pasajeros acumulados"})
+    )
+    nombre_dimension = "operador"
 else:
-    st.write("No se han encontrado etiquetas distintas que coinciden al ignorar espacios exteriores y mayúsculas.")
+    datos_acumulados = datos_acumulados.dropna(subset=["ORIG_1", "DEST_1"])
+    datos_acumulados["Ruta direccional"] = datos_acumulados["ORIG_1"] + " → " + datos_acumulados["DEST_1"]
+    acumulados = (
+        datos_acumulados.groupby("Ruta direccional", observed=True)["PASAJEROS"]
+        .agg(Pasajeros_acumulados="sum", Registros="size")
+        .reset_index()
+        .rename(columns={"Ruta direccional": "Categoría", "Pasajeros_acumulados": "Pasajeros acumulados"})
+    )
+    nombre_dimension = "ruta direccional"
 
-# Busqueda de espacios exteriores
-tabla_espacios = {"Columna": ["Operador", "ORIG_1_N", "DEST_2_N"], "Valor": [], "Frecuencia": [], 
-         "Frecuencia del valor sin espacios": [
-         ]
-}
-
-st.write("Valores con espacios exteriores y posibles categorías equivalentes tras quitar esos espacios:")
-for columna in ["Operador", "ORIG_1_N", "DEST_2_N"]:
-    if columna in df.columns:
-        valores = df[columna].dropna().astype(str)
-        con_espacios = valores[valores.str.strip().ne(valores)]
-        for valor, frecuencia in con_espacios.value_counts().head(10).items():
-            equivalente = valores[valores.eq(valor.strip())].shape[0]
-            tabla_espacios["Valor"].append(valor)
-            tabla_espacios["Frecuencia"].append(frecuencia)
-            tabla_espacios["Frecuencia del valor sin espacios"].append(equivalente)
-
-st.table(tabla_espacios, alt="Valores con espacios exteriores y posibles categorías equivalentes tras quitar esos espacios")
-
-st.write("La inspección confirma **128 registros de `Operador`**, **2 de `ORIG_1_N`** y **2 de `DEST_2_N`** " +
-         "con espacios exteriores. Los valores visibles son `JETSMART PERÚ ` y `TOCOPILLA/AD BARRILES / CHILE `. "+
-         "En este archivo no aparece una categoría idéntica a la versión sin esos espacios (`JETSMART " +
-         "PERÚ` o `TOCOPILLA/AD BARRILES / CHILE`), así que no se observó una división actual entre ambas " +
-         "formas. Aun así, los espacios invisibles pueden dificultar filtros y coincidencias exactas; si hubiera " +
-         "versiones equivalentes en otros datos, también podrían fragmentar conteos por operador, origen o destino. " +
-         "No se normalizaron las etiquetas."
-)
-#-----------------------------
-st.subheader("Revisión de valores negativos en CARGA (Ton)")
-st.write("Aunque se espera revisar rangos, un valor negativo de carga requiere contexto. Contaremos estos " +
-         "registros y mostraremos algunos campos asociados para investigar el caso sin asumir que sea un error " +
-         "ni cambiar el dato."
-)
-
-negativos_carga = df["CARGA (Ton)"] < 0
-columnas_contexto = ["Año", "Mes", "Operador", "ORIG_1", "DEST_1", "CARGA (Ton)", "CORREO", "PASAJEROS", "NAC"]
-columnas_contexto = [col for col in columnas_contexto if col in df.columns]
-st.write(f"Registros con CARGA (Ton) negativa: {negativos_carga.sum():,}")
-st.write(df.loc[negativos_carga, columnas_contexto].head(10))
-
-st.write("En los datos observados, el mínimo de `CARGA (Ton)` leído por pandas es **−1.726** (valor decimal) " +
-         "y se encontró **1 registro negativo**. Corresponde a diciembre de 2024, LATAM CARGO, ruta SCL–BOG; " +
-         "el registro muestra 0 pasajeros y 0 en `CORREO`. Esto merece revisión con la fuente o definición de " +
-         "la variable, pero el signo no basta para concluir que sea un error. El dato se conserva."
-)
-#------------------------------
-
-st.subheader("Revisión de valores altos en CORREO")
-st.write("Inspeccionaremos los registros con mayores valores de `CORREO` junto con su contexto de ruta, " +
-         "periodo, operador y pasajeros. La comparación ayuda a señalar valores que merecen verificación sin " +
-         "clasificarlos automáticamente como erróneos."
-)
-
-columnas_correo = [col for col in ["Año", "Mes", "Operador", "ORIG_1", "DEST_1", "ORIG_1_N", "DEST_1_N", "CORREO", "CARGA (Ton)", "PASAJEROS", "NAC"] if col in df.columns]
-st.write("Diez registros con mayor valor de CORREO:")
-st.write(df.nlargest(10, "CORREO")[columnas_correo])
-
-st.write("Los dos valores más altos de `CORREO` son **4.148.245.086** (AEROLINEAS ARGENTINAS, POA–SCL, " +
-         "octubre de 2007) y **2.457.561.050** (AEROLINEAS ARGENTINAS, NYC–SCL, octubre de 2007); el tercer " +
-         "valor es 635.589. Además, los dos registros máximos muestran 0 pasajeros. La diferencia de magnitud " +
-         "justifica revisar unidades, codificación o fuente, pero no demuestra que los valores sean incorrectos. " +
-         "No se modifican ni descartan."
-)
-#------------------------------
-st.subheader("Posibles valores atípicos en PASAJEROS")
-
-st.write("Como la demanda es la variable objetivo, cuantificaremos valores que superan el umbral superior del " +
-         "rango intercuartílico (Q3 + 1.5 × RIC). Este criterio sirve para señalar observaciones extremas para " +
-         "revisión; no implica que sean errores, especialmente en datos de demanda agregados."
-)
-
-q1 = df["PASAJEROS"].quantile(0.25)
-q3 = df["PASAJEROS"].quantile(0.75)
-ric = q3 - q1
-umbral_inferior = q1 - 1.5 * ric
-umbral_superior = q3 + 1.5 * ric
-
-mascara_atipicos_superiores = df["PASAJEROS"] > umbral_superior
-st.write(f"Umbral superior (Q3 + 1.5 × RIC): {umbral_superior:,.2f}")
-st.write(f"Observaciones sobre el umbral superior: {mascara_atipicos_superiores.sum():,} ({mascara_atipicos_superiores.mean() * 100:.2f}%)")
-st.write("\n\nResumen de PASAJEROS:")
-lista_mascara_atipicos_superiores = (df["PASAJEROS"].describe().tolist())
-
-st.table(
-    {"Cantidad": [int(lista_mascara_atipicos_superiores[0])],
-     "Media": [int(lista_mascara_atipicos_superiores[1])],
-     "Desviación estandar": [lista_mascara_atipicos_superiores[2]],
-     "Minimo": [int(lista_mascara_atipicos_superiores[3])],
-     "25%": [int(lista_mascara_atipicos_superiores[4])],
-     "50%": [int(lista_mascara_atipicos_superiores[5])],
-     "75%": [int(lista_mascara_atipicos_superiores[6])],
-     "Maximo": [int(lista_mascara_atipicos_superiores[7])],
-     "Umbral superior": [umbral_superior],
-     "Observaciones sobre el umbral superior": [mascara_atipicos_superiores.sum()],
-     "%": [mascara_atipicos_superiores.mean() * 100]
-     }
-)
-
-st.write("El criterio IQR identifica observaciones estadísticamente extremas, pero no demuestra que sean " +
-         "errores. Parte de la variabilidad puede corresponder a diferencias reales entre rutas, operadores " +
-         "y periodos. La distribución de `PASAJEROS` se estudiará con más detalle en la sección 2; por ahora " +
-         "no se modifica ni descarta ningún registro."
-)
-#-----------------------------------
-st.subheader("Cobertura temporal y geográfica")
-
-st.write("Verificaremos los años y meses presentes y el alcance geográfico usando las variables de origen, " +
-         "destino y país disponibles. Esto permite confirmar si el periodo descrito en el README coincide " +
-         "con el archivo y si hay cobertura útil para comparar rutas nacionales e internacionales."
-)
-
-if "Año" in df.columns:
-    st.write(f"Años observados: {df['Año'].min()}–{df['Año'].max()}")
-    st.write(f"Cantidad de años distintos: {df['Año'].nunique()}")
-if "Mes" in df.columns:
-    st.write("Meses observados:", str(sorted(df["Mes"].dropna().unique().tolist())))
-
-if {"ORIG_1", "DEST_1"}.issubset(df.columns):
-    rutas_distintas = df[["ORIG_1", "DEST_1"]].drop_duplicates().shape[0]
-    st.write(f"Pares origen-destino distintos: {rutas_distintas:,}")
-
-tabla_cobertura = {
-    "Columna": [],
-    "Categorias distintas": [],
-}
-
-for columna in ["NAC", "ORIG_1", "DEST_1", "ORIG_1_PAIS", "DEST_1_PAIS"]:
-    if columna in df.columns:
-        tabla_cobertura["Columna"].append(columna)
-        tabla_cobertura["Categorias distintas"].append(df[columna].nunique(dropna=True))
-
-st.table(tabla_cobertura, alt="Tabla de cantidad de pares origen-destinos distintos")
-#--------------------------------------
-
-st.subheader("Combinaciones de año y mes sin registros")
-
-st.write("Que aparezcan los 12 meses en el dataset no garantiza que cada año tenga observaciones " +
-         "en todos ellos. Compararemos todas las combinaciones año-mes posibles entre el primer y el " +
-         "último año observados con las combinaciones presentes en los datos."
-)
-
-periodo_anios = range(int(df["Año"].min()), int(df["Año"].max()) + 1)
-combinaciones_esperadas = pd.MultiIndex.from_product([periodo_anios, range(1, 13)], names=["Año", "Mes"])
-combinaciones_observadas = pd.MultiIndex.from_frame(df[["Año", "Mes"]].drop_duplicates())
-meses_ausentes = combinaciones_esperadas.difference(combinaciones_observadas)
-st.write(f"Combinaciones año-mes sin registros: {len(meses_ausentes):,}")
-if len(meses_ausentes):
-    st.write(meses_ausentes.to_frame(index=False))
+if acumulados.empty:
+    st.info("La selección no contiene registros para calcular pasajeros acumulados.")
 else:
-    st.write("No se encontraron meses ausentes dentro del periodo observado.")
+    top_acumulados = (
+        acumulados.nlargest(top_n_acumulado, "Pasajeros acumulados")
+        .sort_values("Pasajeros acumulados", ascending=True)
+        .copy()
+    )
+    orden_acumulados = top_acumulados["Categoría"].tolist()
+    fig_acumulados = px.bar(
+        top_acumulados,
+        x="Pasajeros acumulados",
+        y="Categoría",
+        orientation="h",
+        text=top_acumulados["Pasajeros acumulados"].map(formato_numero),
+        title=(
+            f"Top {len(top_acumulados)} {nombre_dimension} por pasajeros acumulados "
+            f"({rango_anios_acumulado[0]}–{rango_anios_acumulado[1]})"
+        ),
+        labels={"Categoría": dimension_acumulado, "Pasajeros acumulados": "Pasajeros acumulados"},
+        color_discrete_sequence=["#3B82A0"],
+        custom_data=["Registros"],
+    )
+    fig_acumulados.update_traces(
+        textposition="outside", cliponaxis=False,
+        hovertemplate=(
+            "%{y}<br>Pasajeros acumulados: %{x:,.0f}"
+            "<br>Registros: %{customdata[0]:,.0f}<extra></extra>"
+        )
+    )
+    fig_acumulados.update_yaxes(categoryorder="array", categoryarray=orden_acumulados)
+    fig_acumulados.update_layout(
+        xaxis_title="Pasajeros acumulados en los registros",
+        yaxis_title=dimension_acumulado,
+        margin=dict(t=75, l=45, r=50, b=55),
+    )
+    st.plotly_chart(fig_acumulados, use_container_width=True)
 
-st.write("La cobertura agregada de años y meses se verifica con esta tabla de combinaciones. Si existen " +
-         "meses ausentes, podrían interrumpir series temporales y afectar comparaciones mensuales; su " +
-         "ausencia también puede responder a la disponibilidad histórica del registro y debe considerarse " +
-         "al interpretar tendencias. Si no aparecen combinaciones ausentes, eso confirma continuidad mensual " +
-         "en el periodo evaluado, aunque no garantiza que cada ruta u operador tenga datos todos los meses."
-)
+    lider_acumulado = top_acumulados.iloc[-1]
+    st.caption(
+        f"Con estos filtros, {lider_acumulado['Categoría']} tiene el mayor acumulado entre "
+        f"las categorías mostradas ({formato_numero(lider_acumulado['Pasajeros acumulados'])} pasajeros) "
+        f"en {formato_numero(lider_acumulado['Registros'])} registros. Este total no equivale "
+        "a pasajeros únicos, vuelos individuales, eficiencia ni popularidad."
+    )
 
-#--------------------------------------------
-st.subheader("Síntesis de estructura y calidad")
-
-st.write("El archivo contiene **251.117 registros y 25 variables**, con cobertura observada entre **1984 y " +
-         "2025**. Se encuentran los 12 meses y no se detectaron combinaciones año-mes ausentes en el periodo " +
-         "observado."
-)
-
-st.write("La unidad de análisis corresponde a registros agregados de tráfico; origen, destino, " +
-         "operador, periodo y `PASAJEROS` son relevantes para la pregunta del proyecto."
-)
-
-st.write("Se confirmaron **57.062 valores faltantes en `PAX_LIB` y 57.062 en `CORREO` (22,72 % en cada " +
-         "variable)**. Esto limita análisis que dependan de esas variables y puede hacer que las muestras " +
-         "analizadas difieran. No se imputaron datos. También se confirmaron **18 filas duplicadas exactas " +
-         "(0,01 % del dataset)**; conviene revisar su procedencia e impacto potencial antes de decidir si son " +
-         "duplicados de carga o registros legítimos repetidos."
-)
-
-st.write("En las etiquetas categóricas se detectaron **128 registros de `Operador`**, **2 de `ORIG_1_N`** y " +
-         "**2 de `DEST_2_N`** con espacios exteriores."
-)
-
-st.write("La revisión de equivalencias indicará si hay versiones " +
-         "sin espacios que colisionan al normalizarlas. Estos casos podrían fragmentar conteos por categoría " +
-         "si se agrupan literalmente; no se aplicó `strip()` ni otra normalización."
-)
-
-st.write("En `CARGA (Ton)` se observó un valor negativo (mínimo aproximado **−1,726**) que requiere contexto; " +
-         "el valor se conserva. Los valores máximos de `CORREO` también se señalaron para verificación " +
-         "contextual."
-)
-
-st.write("El criterio IQR identificó **35.514 observaciones por encima del umbral superior " +
-         "(14,14 %)**: son extremos estadísticos potenciales, no errores confirmados. Diferencias reales entre " +
-         "rutas, operadores y periodos pueden explicar parte de esta variabilidad; su distribución se analizará " +
-         "en la sección 2."
-)
-
-st.write("Quedan pendientes de justificación —sin aplicar cambios en esta etapa— la interpretación del valor " +
-         "negativo de carga, los valores muy altos de correo, el origen e impacto de las filas duplicadas y el " +
-         "tratamiento futuro de las etiquetas con espacios. Los recuentos y conclusiones deben contrastarse con " +
-         "las salidas de las celdas de esta sección antes de tomar decisiones de limpieza."
-)
+    if dimension_acumulado == "Operador":
+        mostrar_distribuciones = st.checkbox(
+            "Comparar también la distribución de pasajeros por registro entre estos operadores",
+            value=False,
+            key="eda_operator_box_toggle",
+        )
+        if mostrar_distribuciones:
+            operadores_top = top_acumulados["Categoría"].tolist()
+            datos_operadores_top = datos_acumulados.loc[
+                datos_acumulados["Operador"].isin(operadores_top)
+            ].copy()
+            datos_operadores_top["log1p(PASAJEROS)"] = np.log1p(datos_operadores_top["PASAJEROS"])
+            fig_operadores_box = px.box(
+                datos_operadores_top,
+                x="log1p(PASAJEROS)",
+                y="Operador",
+                category_orders={"Operador": operadores_top[::-1]},
+                points=False,
+                title="Distribución de pasajeros por registro en los operadores seleccionados",
+                labels={"Operador": "Operador", "log1p(PASAJEROS)": "log(1 + pasajeros por registro)"},
+                color="Operador",
+                color_discrete_sequence=px.colors.qualitative.Safe,
+                custom_data=["PASAJEROS"],
+            )
+            fig_operadores_box.update_xaxes(
+                tickmode="array",
+                tickvals=np.log1p([0, 1, 10, 100, 1_000, 10_000, 50_000]),
+                ticktext=["0", "1", "10", "100", "1.000", "10.000", "50.000"],
+                title="Pasajeros por registro (etiquetas originales; eje log1p)",
+            )
+            fig_operadores_box.update_traces(
+                hovertemplate=(
+                    "%{y}<br>log(1 + pasajeros): %{x:.3f}"
+                    "<br>Pasajeros por registro: %{customdata[0]:,.0f}<extra></extra>"
+                )
+            )
+            fig_operadores_box.update_layout(
+                showlegend=False, margin=dict(t=75, l=45, r=25, b=55)
+            )
+            st.plotly_chart(fig_operadores_box, use_container_width=True)
+            resumen_operadores = (
+                datos_operadores_top.groupby("Operador", observed=True)
+                .agg(
+                    Registros=("PASAJEROS", "size"),
+                    Mediana_por_registro=("PASAJEROS", "median"),
+                    Ceros_pct=("PASAJEROS", lambda serie: serie.eq(0).mean() * 100),
+                )
+                .reindex(operadores_top)
+            )
+            if len(resumen_operadores) >= 2:
+                medianas_operadores = resumen_operadores["Mediana_por_registro"].dropna()
+                op_mayor, op_menor = medianas_operadores.idxmax(), medianas_operadores.idxmin()
+                if op_mayor != op_menor:
+                    st.caption(
+                        f"Entre los operadores mostrados, la mediana por registro más alta es la de "
+                        f"{op_mayor} ({formato_numero(medianas_operadores[op_mayor])}) y la más baja "
+                        f"la de {op_menor} ({formato_numero(medianas_operadores[op_menor])}). "
+                        "Este resumen complementa los acumulados; cada operador puede tener distinta "
+                        "cantidad de registros y cobertura temporal."
+                    )
